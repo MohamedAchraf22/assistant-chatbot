@@ -1,0 +1,25 @@
+# Virtual Environment
+venv312/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Chainlit
+.chainlit/
+chainlit.md
+
+# Jupyter
+*.ipynb
+
+# Tests
+test_*.py
+
+# Environment variables
+.env
+
+# Local vector database
+chroma/
+
+# Local data
+data/
