@@ -7,7 +7,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
-from config import DATA_PATH, CHROMA_PATH
+from config import DATA_PATH, CHROMA_PATH , RETRIEVAL_THRESHOLD
 
 
 def load_documents():
@@ -68,37 +68,33 @@ def load_vector_store():
 
 
 
-def get_retriever(threshold: float = 0.5):  
+def get_docs_by_distance(question: str, k: int = 4, threshold: float = RETRIEVAL_THRESHOLD):
+    """
+    Returns documents whose L2 distance to the query is <= threshold.
+    Lower distance = more similar. Typical good range: 0.0 – 0.8.
+    """
     db = load_vector_store()
-    retriever = db.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={
-            "k": 4,
-            "score_threshold": threshold
-        }
-    )
-    return retriever
+    docs_with_scores = db.similarity_search_with_score(question, k=k)
+    return [doc for doc, distance in docs_with_scores if distance <= threshold]
 
 
-def debug_rag_retrieval(question: str, threshold: float = 0.5):
+def debug_rag_retrieval(question: str, threshold: float = RETRIEVAL_THRESHOLD):
     db = load_vector_store()
-
-    # Use relevance scores (same scale as the retriever) instead of raw distances
-    docs_with_scores = db.similarity_search_with_relevance_scores(question, k=6)
+    docs_with_scores = db.similarity_search_with_score(question, k=6)
 
     print(f"\n{'='*70}")
     print(f"🔍 RAG DEBUG - Query: {question}")
-    print(f"Threshold (relevance): {threshold}")
+    print(f"Distance threshold (lower = better): <= {threshold}")
     print(f"{'='*70}\n")
 
     relevant = 0
-    for i, (doc, score) in enumerate(docs_with_scores, 1):
-        is_relevant = score >= threshold          # ← relevance: higher is better
-        print(f"{i}. Relevance: {score:.4f} → {'✅' if is_relevant else '❌'}")
+    for i, (doc, distance) in enumerate(docs_with_scores, 1):
+        is_relevant = distance <= threshold
+        print(f"{i}. Distance: {distance:.4f} → {'✅' if is_relevant else '❌'}")
         print(f"   Content: {doc.page_content[:180]}...\n")
         if is_relevant:
             relevant += 1
 
-    print(f" Total relevant documents returned: {relevant}")
+    print(f"✅ Total relevant documents returned: {relevant}")
     print(f"{'='*70}\n")
     return relevant

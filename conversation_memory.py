@@ -16,22 +16,17 @@ embeddings = HuggingFaceEmbeddings(
 
 
 def get_conversation_vectorstore():
-    if os.path.exists(CONVERSATION_PATH):
-        return Chroma(
-            persist_directory=CONVERSATION_PATH,
-            embedding_function=embeddings
-        )
-    else:
-      
-        return Chroma(
-            persist_directory=CONVERSATION_PATH,
-            embedding_function=embeddings
-        )
+    # Don't create the directory here; let Chroma handle it on first save
+    return Chroma(
+        persist_directory=CONVERSATION_PATH,
+        embedding_function=embeddings
+    )
 
 
 def save_conversation(user_message: str, bot_reply: str, session_id: str = None):
     if session_id is None:
         session_id = str(uuid.uuid4())
+    os.makedirs(CONVERSATION_PATH, exist_ok=True)
 
     timestamp = datetime.now().isoformat()
 
@@ -54,26 +49,25 @@ def save_conversation(user_message: str, bot_reply: str, session_id: str = None)
 
 
 def get_relevant_history(question: str, k: int = 6, threshold: float = 0.65):
-    vectorstore = get_conversation_vectorstore()
-    
-    docs_with_scores = vectorstore.similarity_search_with_score(question, k=k)
-    
-    print(f"\n[MEMORY DEBUG] Query: {question}")
+    try:
+        vectorstore = get_conversation_vectorstore()
+        docs_with_scores = vectorstore.similarity_search_with_score(question, k=k)
+    except Exception as e:
+        # Happens when the conversation store exists on disk but has no index yet
+        # (i.e. no conversations have been saved yet)
+        print(f"  → Conversation store not ready yet: {e}")
+        return "No previous conversations."
+
     relevant_docs = []
-    
     for doc, distance in docs_with_scores:
-        similarity = 1 - distance
-        print(f"  → Distance: {distance:.4f} | Similarity: {similarity:.4f} {'' if distance <= threshold else ''}")
-        
+        print(f"  → Distance: {distance:.4f} {'✅' if distance <= threshold else '❌'}")
         if distance <= threshold:
             relevant_docs.append(doc)
-    
+
     if not relevant_docs:
-        print("  → No relevant history found.")
         return "No previous conversations."
-    
-    history = "\n\n".join([str(doc.page_content) for doc in relevant_docs])
-    return history
+
+    return "\n\n".join(doc.page_content for doc in relevant_docs)
 
 
 def clear_conversation_history():
