@@ -1,20 +1,151 @@
 import os
 import shutil
-
 from langchain_core.documents import Document
 from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
+from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER
+from dotenv import load_dotenv
+from minio import Minio
+from storage.minio_client import get_minio_client
 
-from config import DATA_PATH, CHROMA_PATH , RETRIEVAL_THRESHOLD
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Singletons — loaded once at startup, reused on every request
+# ---------------------------------------------------------------------------
+print("⏳ Loading embedding model (once)...")
+_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+print("✅ Embedding model ready.")
+
+_vector_store: Chroma | None = None
 
 
-def load_documents():
+def load_vector_store() -> Chroma:
+    """Return the shared Chroma instance, opening it once and reusing it."""
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = Chroma(
+            persist_directory=CHROMA_PATH,
+            embedding_function=_embeddings,
+        )
+    return _vector_store
+
+
+# ---------------------------------------------------------------------------
+# Document loaders
+# ---------------------------------------------------------------------------
+
+def load_documents_from_local():
     loader = DirectoryLoader(DATA_PATH, glob="*.md")
     documents = loader.load()
     return documents
 
+
+def load_documents_from_minio() -> list[Document]:
+    """
+    Downloads all objects from the configured MinIO bucket and returns them
+    as a list of LangChain Documents.
+
+    Each Document contains:
+        - page_content : UTF-8 decoded file content
+        - metadata     : object_name, bucket_name, etag, last_modified
+    """
+    bucket_name = os.getenv("MINIO_BUCKET")
+
+    client = get_minio_client()
+
+    documents: list[Document] = []
+    objects = client.list_objects(bucket_name, recursive=True)
+
+    for obj in objects:
+        response = client.get_object(bucket_name, obj.object_name)
+        try:
+            raw_bytes = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+        try:
+            content = raw_bytes.decode("utf-8", errors="replace")
+        except UnicodeDecodeError:
+            print(f"  ⚠ Skipping non-UTF-8 object: {obj.object_name}")
+            continue
+
+        doc = Document(
+            page_content=content,
+            metadata={
+                "object_name":   obj.object_name,
+                "bucket_name":   bucket_name,
+                "etag":          obj.etag,
+                "last_modified": obj.last_modified.isoformat() if obj.last_modified else None,
+            },
+        )
+        documents.append(doc)
+        print(f"  ✅ Loaded: {obj.object_name} ({len(content)} chars)")
+
+    print(f"\nLoaded {len(documents)} document(s) from MinIO bucket '{bucket_name}'.")
+    return documents
+
+
+def load_document_from_minio(object_name: str) -> Document:
+    """
+    Download a single object from MinIO and return it as a LangChain Document.
+
+    Args:
+        object_name: The full object key to download from the bucket.
+
+    Returns:
+        A Document with UTF-8 decoded content and MinIO metadata.
+
+    Raises:
+        RuntimeError: If the object cannot be downloaded or decoded.
+    """
+    bucket_name = os.getenv("MINIO_BUCKET")
+    client = get_minio_client()
+
+    try:
+        response = client.get_object(bucket_name, object_name)
+        try:
+            raw_bytes = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download '{object_name}' from bucket '{bucket_name}': {e}"
+        ) from e
+
+    try:
+        content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise RuntimeError(f"Failed to decode '{object_name}' as UTF-8: {e}") from e
+
+    stat = client.stat_object(bucket_name, object_name)
+
+    return Document(
+        page_content=content,
+        metadata={
+            "object_name":   object_name,
+            "bucket_name":   bucket_name,
+            "etag":          stat.etag,
+            "last_modified": stat.last_modified.isoformat() if stat.last_modified else None,
+        },
+    )
+
+def load_documents():
+    if STORAGE_PROVIDER == 'local':
+        return load_documents_from_local()
+    elif STORAGE_PROVIDER == 'minio':
+        return load_documents_from_minio()
+    else:
+        raise ValueError(f"Unknown STORAGE_PROVIDER: '{STORAGE_PROVIDER}'. Expected 'local' or 'minio'.")
+
+
+# ---------------------------------------------------------------------------
+# Ingestion helpers
+# ---------------------------------------------------------------------------
 
 def split_text(documents):
     text_splitter = RecursiveCharacterTextSplitter(
@@ -25,48 +156,31 @@ def split_text(documents):
     )
 
     chunks = text_splitter.split_documents(documents)
-
-    print(
-        f"Split {len(documents)} documents into {len(chunks)} chunks."
-    )
-
+    print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 
 
 def save_to_chroma(chunks: list[Document]):
+    global _vector_store
+
     if os.path.exists(CHROMA_PATH):
         shutil.rmtree(CHROMA_PATH)
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-mpnet-base-v2"
-    )
+    # Reset singleton so next load_vector_store() picks up the new DB
+    _vector_store = None
 
     db = Chroma.from_documents(
         chunks,
-        embeddings,
-        persist_directory=CHROMA_PATH
-    )
-
-    db.persist()
-
-    print(
-        f"Saved {len(chunks)} chunks to {CHROMA_PATH}"
-    )
-
-
-def load_vector_store():
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-mpnet-base-v2"
-    )
-
-    db = Chroma(
+        _embeddings,           # reuse the singleton — no reload
         persist_directory=CHROMA_PATH,
-        embedding_function=embeddings
     )
+    db.persist()
+    print(f"Saved {len(chunks)} chunks to {CHROMA_PATH}")
 
-    return db
 
-
+# ---------------------------------------------------------------------------
+# Retrieval
+# ---------------------------------------------------------------------------
 
 def get_docs_by_distance(question: str, k: int = 4, threshold: float = RETRIEVAL_THRESHOLD):
     """

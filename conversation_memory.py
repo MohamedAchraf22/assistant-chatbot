@@ -4,23 +4,28 @@ from datetime import datetime
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from config import CHROMA_PATH
+from config import CHROMA_PATH, EMBEDDING_MODEL
 import shutil
 
 # Path for conversation memory
 CONVERSATION_PATH = os.path.join(CHROMA_PATH, "conversations")
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-mpnet-base-v2"
+    model_name=EMBEDDING_MODEL
 )
 
+_conversation_store: Chroma | None = None
 
-def get_conversation_vectorstore():
-    # Don't create the directory here; let Chroma handle it on first save
-    return Chroma(
-        persist_directory=CONVERSATION_PATH,
-        embedding_function=embeddings
-    )
+
+def get_conversation_vectorstore() -> Chroma:
+    """Return a shared Chroma instance for conversation memory, opened once."""
+    global _conversation_store
+    if _conversation_store is None:
+        _conversation_store = Chroma(
+            persist_directory=CONVERSATION_PATH,
+            embedding_function=embeddings,
+        )
+    return _conversation_store
 
 
 def save_conversation(user_message: str, bot_reply: str, session_id: str = None):
@@ -42,7 +47,7 @@ def save_conversation(user_message: str, bot_reply: str, session_id: str = None)
 
     vectorstore = get_conversation_vectorstore()
     vectorstore.add_documents([doc])
-    vectorstore.persist() # save changes in the disk
+    vectorstore.persist()  # save changes to disk
 
     print(f"Conversation saved | Session: {session_id[:8]}...")
     return session_id
@@ -53,8 +58,6 @@ def get_relevant_history(question: str, k: int = 6, threshold: float = 0.65):
         vectorstore = get_conversation_vectorstore()
         docs_with_scores = vectorstore.similarity_search_with_score(question, k=k)
     except Exception as e:
-        # Happens when the conversation store exists on disk but has no index yet
-        # (i.e. no conversations have been saved yet)
         print(f"  → Conversation store not ready yet: {e}")
         return "No previous conversations."
 
@@ -71,19 +74,20 @@ def get_relevant_history(question: str, k: int = 6, threshold: float = 0.65):
 
 
 def clear_conversation_history():
+    global _conversation_store
     try:
         if os.path.exists(CONVERSATION_PATH):
+            _conversation_store = None  # drop the cached instance before deleting the dir
             shutil.rmtree(CONVERSATION_PATH)
-            print(" Conversation history has been completely cleared.")
+            print("Conversation history has been completely cleared.")
             return True
         else:
             print("No conversation history found to clear.")
             return False
     except Exception as e:
-        print(f" Error while clearing history: {e}")
+        print(f"Error while clearing history: {e}")
         return False
 
 
 def clear_conversation_by_session(session_id: str):
-   
     pass
