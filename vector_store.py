@@ -156,6 +156,16 @@ def split_text(documents):
     )
 
     chunks = text_splitter.split_documents(documents)
+
+    # Assign a deterministic ID to each chunk: <object_name>::<chunk_index>
+    # chunk_index resets to 0 for every new source document.
+    source_counters: dict[str, int] = {}
+    for chunk in chunks:
+        object_name = chunk.metadata.get("object_name") or chunk.metadata.get("source", "unknown")
+        index = source_counters.get(object_name, 0)
+        chunk.metadata["chunk_id"] = f"{object_name}::{index}"
+        source_counters[object_name] = index + 1
+
     print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 
@@ -178,22 +188,57 @@ def save_to_chroma(chunks: list[Document]):
     print(f"Saved {len(chunks)} chunks to {CHROMA_PATH}")
 
 
+
+
+def add_documents(documents: list[Document]) -> None:
+    """
+    Split the provided documents into chunks and add them to the existing
+    Chroma database without deleting any existing data.
+    """
+    chunks = split_text(documents)
+
+    db = load_vector_store()
+    db.add_documents(chunks)
+    db.persist()
+
+    print(f"Added {len(chunks)} chunk(s) to the existing vector store.")
+
+
+
+def delete_documents_by_object_name(object_name: str) -> None:
+    """
+    Delete all chunks belonging to a given object from the Chroma vector store.
+    Matches on metadata field 'object_name'.
+    """
+    db = load_vector_store()
+
+    db._collection.delete(where={"object_name": object_name})
+    db.persist()
+
+    print(f"Deleted all chunks for '{object_name}' from the vector store.")
+
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
 
 def get_docs_by_distance(question: str, k: int = 4, threshold: float = RETRIEVAL_THRESHOLD):
-    """
-    Returns documents whose L2 distance to the query is <= threshold.
-    Lower distance = more similar. Typical good range: 0.0 – 0.8.
-    """
     db = load_vector_store()
+
+    # Chroma raises or returns Documents with page_content=None when the
+    # collection is empty. Guard against this before querying.
+    if db._collection.count() == 0:
+        return []
+
     docs_with_scores = db.similarity_search_with_score(question, k=k)
     return [doc for doc, distance in docs_with_scores if distance <= threshold]
 
 
 def debug_rag_retrieval(question: str, threshold: float = RETRIEVAL_THRESHOLD):
     db = load_vector_store()
+    if db._collection.count() == 0:
+        print("⚠️  Vector store is empty — no documents to search.")
+        return 0
+
     docs_with_scores = db.similarity_search_with_score(question, k=6)
 
     print(f"\n{'='*70}")
@@ -211,4 +256,5 @@ def debug_rag_retrieval(question: str, threshold: float = RETRIEVAL_THRESHOLD):
 
     print(f"✅ Total relevant documents returned: {relevant}")
     print(f"{'='*70}\n")
+    
     return relevant
