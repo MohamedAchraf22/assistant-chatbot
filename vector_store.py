@@ -161,11 +161,17 @@ def split_text(documents):
     # chunk_index resets to 0 for every new source document.
     source_counters: dict[str, int] = {}
     for chunk in chunks:
+        print(chunk.metadata)
         object_name = chunk.metadata.get("object_name") or chunk.metadata.get("source", "unknown")
         index = source_counters.get(object_name, 0)
         chunk.metadata["chunk_id"] = f"{object_name}::{index}"
         source_counters[object_name] = index + 1
-
+    for i, chunk in enumerate(chunks):
+        if "Common Types of Compulsions" in chunk.page_content:
+            print("=" * 80)
+            print(f"Chunk #{i}")
+            print(chunk.page_content)
+            print("=" * 80)
     print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 

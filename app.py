@@ -1,8 +1,18 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 from rag import ask_question
+from scheduler import start_scheduler, stop_scheduler
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
@@ -33,12 +43,10 @@ def normalize_answer(answer) -> str:
             if isinstance(item, str):
                 parts.append(item)
             elif isinstance(item, dict):
-                
                 parts.append(item.get("text", str(item)))
             else:
                 parts.append(str(item))
         return "".join(parts)
-
 
     return str(answer) if answer is not None else ""
 

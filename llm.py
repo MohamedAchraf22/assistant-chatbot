@@ -6,5 +6,5 @@ def get_llm():
         model=MODEL_NAME,
         google_api_key=API_KEY,
         temperature=0,
-        max_tokens=256
+        max_tokens=512
     )
