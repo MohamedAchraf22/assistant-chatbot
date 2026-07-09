@@ -5,7 +5,7 @@ from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER
+from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER , NUM_OF_RETRIEVED_CHUNKS
 from dotenv import load_dotenv
 from minio import Minio
 from storage.minio_client import get_minio_client
@@ -166,12 +166,6 @@ def split_text(documents):
         index = source_counters.get(object_name, 0)
         chunk.metadata["chunk_id"] = f"{object_name}::{index}"
         source_counters[object_name] = index + 1
-    for i, chunk in enumerate(chunks):
-        if "Common Types of Compulsions" in chunk.page_content:
-            print("=" * 80)
-            print(f"Chunk #{i}")
-            print(chunk.page_content)
-            print("=" * 80)
     print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 
@@ -227,7 +221,7 @@ def delete_documents_by_object_name(object_name: str) -> None:
 # Retrieval
 # ---------------------------------------------------------------------------
 
-def get_docs_by_distance(question: str, k: int = 4, threshold: float = RETRIEVAL_THRESHOLD):
+def get_docs_by_distance(question: str, k: int = NUM_OF_RETRIEVED_CHUNKS, threshold: float = RETRIEVAL_THRESHOLD):
     db = load_vector_store()
 
     # Chroma raises or returns Documents with page_content=None when the
@@ -245,7 +239,7 @@ def debug_rag_retrieval(question: str, threshold: float = RETRIEVAL_THRESHOLD):
         print("⚠️  Vector store is empty — no documents to search.")
         return 0
 
-    docs_with_scores = db.similarity_search_with_score(question, k=6)
+    docs_with_scores = db.similarity_search_with_score(question, k=NUM_OF_RETRIEVED_CHUNKS)
 
     print(f"\n{'='*70}")
     print(f"🔍 RAG DEBUG - Query: {question}")

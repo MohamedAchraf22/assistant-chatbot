@@ -5,4 +5,5 @@ EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2"
 CHROMA_PATH = "chroma"
 DATA_PATH = "data"
 RETRIEVAL_THRESHOLD = 1
+NUM_OF_RETRIEVED_CHUNKS=6
 STORAGE_PROVIDER='minio'

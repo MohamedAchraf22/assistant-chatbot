@@ -13,7 +13,7 @@ chainlit.md
 *.ipynb
 
 # Tests
-test_*.py
+test*.py
 
 # Environment variables
 .env

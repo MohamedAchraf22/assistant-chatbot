@@ -5,6 +5,7 @@ from langchain_core.output_parsers import StrOutputParser
 from llm import get_llm
 from conversation_memory import get_relevant_history  
 from vector_store import get_docs_by_distance, debug_rag_retrieval
+from config import RETRIEVAL_THRESHOLD , NUM_OF_RETRIEVED_CHUNKS
 
 SYSTEM_PROMPT = """
 You are a specialized assistant.
@@ -61,7 +62,7 @@ def ask_question(question: str):
 
     rag_chain = build_rag_chain()
 
-    docs = get_docs_by_distance(question, k=4, threshold=0.65)
+    docs = get_docs_by_distance(question, k=NUM_OF_RETRIEVED_CHUNKS, threshold=RETRIEVAL_THRESHOLD)
     context = "\n\n---\n\n".join(doc.page_content for doc in docs) if docs else ""
 
     print("\n" + "="*80)
