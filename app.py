@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 from rag import ask_question
+from typing import Optional
 from scheduler import start_scheduler, stop_scheduler
 
 
@@ -22,6 +23,9 @@ def home():
 
 class ChatRequest(BaseModel):
     question: str
+    # Recent session turns passed from the UI layer.
+    # Each entry is {"role": "user"|"assistant", "content": "..."}
+    history: Optional[list[dict]] = None
 
 
 class ChatResponse(BaseModel):
@@ -54,7 +58,7 @@ def normalize_answer(answer) -> str:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     try:
-        answer = ask_question(request.question)
+        answer = ask_question(request.question, history=request.history or [])
         return ChatResponse(answer=normalize_answer(answer))
     except Exception as e:
         return ChatResponse(answer=f"Error in RAG: {str(e)}")

@@ -5,7 +5,7 @@ from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter , MarkdownHeaderTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER , NUM_OF_RETRIEVED_CHUNKS
+from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER, RETRIEVAL_K
 from dotenv import load_dotenv
 from minio import Minio
 from storage.minio_client import get_minio_client
@@ -245,7 +245,7 @@ def delete_documents_by_object_name(object_name: str) -> None:
 # Retrieval
 # ---------------------------------------------------------------------------
 
-def get_docs_by_distance(question: str, k: int = NUM_OF_RETRIEVED_CHUNKS, threshold: float = RETRIEVAL_THRESHOLD):
+def get_docs_by_distance(question: str, k: int = RETRIEVAL_K, threshold: float = RETRIEVAL_THRESHOLD):
     db = load_vector_store()
 
     # Chroma raises or returns Documents with page_content=None when the
@@ -254,31 +254,4 @@ def get_docs_by_distance(question: str, k: int = NUM_OF_RETRIEVED_CHUNKS, thresh
         return []
 
     docs_with_scores = db.similarity_search_with_score(question, k=k)
-    return [doc for doc, distance in docs_with_scores if distance <= threshold]
-
-
-def debug_rag_retrieval(question: str, threshold: float = RETRIEVAL_THRESHOLD):
-    db = load_vector_store()
-    if db._collection.count() == 0:
-        print("⚠️  Vector store is empty — no documents to search.")
-        return 0
-
-    docs_with_scores = db.similarity_search_with_score(question, k=NUM_OF_RETRIEVED_CHUNKS)
-
-    print(f"\n{'='*70}")
-    print(f"🔍 RAG DEBUG - Query: {question}")
-    print(f"Distance threshold (lower = better): <= {threshold}")
-    print(f"{'='*70}\n")
-
-    relevant = 0
-    for i, (doc, distance) in enumerate(docs_with_scores, 1):
-        is_relevant = distance <= threshold
-        print(f"{i}. Distance: {distance:.4f} → {'✅' if is_relevant else '❌'}")
-        print(f"   Content: {doc.page_content[:180]}...\n")
-        if is_relevant:
-            relevant += 1
-
-    print(f"✅ Total relevant documents returned: {relevant}")
-    print(f"{'='*70}\n")
-    
-    return relevant
+    return [(doc, distance) for doc, distance in docs_with_scores if distance <= threshold]
