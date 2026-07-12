@@ -2,7 +2,7 @@ import os
 import shutil
 from langchain_core.documents import Document
 from langchain_community.document_loaders import DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter , MarkdownHeaderTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER , NUM_OF_RETRIEVED_CHUNKS
@@ -148,24 +148,48 @@ def load_documents():
 # ---------------------------------------------------------------------------
 
 def split_text(documents):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,
+    # Step 1: Split on Markdown headers first so each chunk respects document
+    # structure (sections don't bleed across headings).
+    header_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[
+            ("#",   "h1"),
+            ("##",  "h2"),
+            ("###", "h3"),
+        ],
+        strip_headers=False,  # keep the heading text inside the chunk content
+    )
+ 
+    # Step 2: If a section is still too large after header splitting, cut it
+    # further with the recursive splitter.
+    recursive_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
         chunk_overlap=100,
         length_function=len,
         add_start_index=True,
     )
-
-    chunks = text_splitter.split_documents(documents)
-
-    # Assign a deterministic ID to each chunk: <object_name>::<chunk_index>
-    # chunk_index resets to 0 for every new source document.
-    source_counters: dict[str, int] = {}
-    for chunk in chunks:
+ 
+    chunks = []
+    for doc in documents:
+        # MarkdownHeaderTextSplitter works on raw text, not Documents, so we
+        # pass page_content and then restore the original metadata on every
+        # resulting section.
+        sections = header_splitter.split_text(doc.page_content)
+ 
+        for section in sections:
+            # Merge original document metadata with any header metadata added
+            # by the splitter (h1, h2, h3 keys), giving priority to the
+            # original so object_name / source / etag are never overwritten.
+            section.metadata = {**section.metadata, **doc.metadata}
+ 
+        # Apply recursive splitting to each section; metadata is propagated
+        # automatically by split_documents.
+        chunks.extend(recursive_splitter.split_documents(sections))
+    for i, chunk in enumerate(chunks):
+        print("=" * 80)
+        print(f"Chunk {i}")
         print(chunk.metadata)
-        object_name = chunk.metadata.get("object_name") or chunk.metadata.get("source", "unknown")
-        index = source_counters.get(object_name, 0)
-        chunk.metadata["chunk_id"] = f"{object_name}::{index}"
-        source_counters[object_name] = index + 1
+        print(chunk.page_content)
+ 
     print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 
