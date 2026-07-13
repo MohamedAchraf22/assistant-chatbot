@@ -3,27 +3,21 @@ import uuid
 from datetime import datetime
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from config import CHROMA_PATH, EMBEDDING_MODEL
+from config import CHROMA_PATH
+from vector_store import _embeddings   # ← reuse the singleton, don't load twice
 import shutil
 
-# Path for conversation memory
 CONVERSATION_PATH = os.path.join(CHROMA_PATH, "conversations")
-
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL
-)
 
 _conversation_store: Chroma | None = None
 
 
 def get_conversation_vectorstore() -> Chroma:
-    """Return a shared Chroma instance for conversation memory, opened once."""
     global _conversation_store
     if _conversation_store is None:
         _conversation_store = Chroma(
             persist_directory=CONVERSATION_PATH,
-            embedding_function=embeddings,
+            embedding_function=_embeddings,
         )
     return _conversation_store
 
@@ -34,9 +28,7 @@ def save_conversation(user_message: str, bot_reply: str, session_id: str = None)
     os.makedirs(CONVERSATION_PATH, exist_ok=True)
 
     timestamp = datetime.now().isoformat()
-
     content = f"User: {user_message}\nAssistant: {bot_reply}"
-
     metadata = {
         "session_id": session_id,
         "timestamp": timestamp,
@@ -44,10 +36,9 @@ def save_conversation(user_message: str, bot_reply: str, session_id: str = None)
     }
 
     doc = Document(page_content=content, metadata=metadata)
-
     vectorstore = get_conversation_vectorstore()
     vectorstore.add_documents([doc])
-    vectorstore.persist()  # save changes to disk
+    vectorstore.persist()
 
     print(f"Conversation saved | Session: {session_id[:8]}...")
     return session_id
@@ -77,7 +68,7 @@ def clear_conversation_history():
     global _conversation_store
     try:
         if os.path.exists(CONVERSATION_PATH):
-            _conversation_store = None  # drop the cached instance before deleting the dir
+            _conversation_store = None
             shutil.rmtree(CONVERSATION_PATH)
             print("Conversation history has been completely cleared.")
             return True

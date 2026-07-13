@@ -6,9 +6,7 @@ from reranker import rerank
 from config import RERANKER_THRESHOLD, RERANKER_TOP_N
 
 # ---------------------------------------------------------------------------
-# Prompt: query contextualization
-# Rewrites the user question into a standalone retrieval query using recent
-# session history. Strictly rewrites — never answers.
+# Prompts
 # ---------------------------------------------------------------------------
 CONTEXTUALIZE_PROMPT = """You are a query rewriter for a retrieval system.
 
@@ -34,11 +32,6 @@ CONTEXTUALIZE_TEMPLATE = ChatPromptTemplate.from_messages([
     ("human", CONTEXTUALIZE_PROMPT),
 ])
 
-# ---------------------------------------------------------------------------
-# Prompt: answer generation
-# Uses the original user question and the retrieved context chunks.
-# History is included only as readable background — not as few-shot examples.
-# ---------------------------------------------------------------------------
 ANSWER_PROMPT = """You are a specialized assistant.
 
 Rules:
@@ -62,13 +55,26 @@ ANSWER_TEMPLATE = ChatPromptTemplate.from_messages([
     ("human", "{question}"),
 ])
 
+# ---------------------------------------------------------------------------
+# LLM singleton
+# ---------------------------------------------------------------------------
+_llm = None
+
+
+def get_cached_llm():
+    global _llm
+    if _llm is None:
+        print("⏳ Loading LLM (once)...")
+        _llm = get_llm()
+        print("✅ LLM ready.")
+    return _llm
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _format_history(history: list[dict]) -> str:
-    """Convert [{role, content}, ...] list to a readable string for prompts."""
     if not history:
         return "No previous conversation."
     lines = []
@@ -83,75 +89,74 @@ def _preview(text: str, limit: int = 100) -> str:
             if len(text) > limit else text.replace("\n", " ").strip())
 
 
+def _extract_text(raw) -> str:
+    """Safely convert LLM .content (str or list) to a plain string."""
+    if isinstance(raw, list):
+        return "".join(
+            item.get("text", str(item)) if isinstance(item, dict) else str(item)
+            for item in raw
+        ).strip()
+    return (raw or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # Query contextualization
 # ---------------------------------------------------------------------------
 
 def contextualize_query(question: str, history: list[dict], llm) -> str:
-    if not history:
+    # Skip LLM call entirely when history is short — not worth the round-trip
+    if not history or len(history) < 4:
         return question
 
     prompt = CONTEXTUALIZE_TEMPLATE.invoke({
         "history": _format_history(history),
         "question": question,
     })
-    
-    raw = llm.invoke(prompt).content
-    if isinstance(raw, list):
-        rewritten = "".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in raw
-        ).strip()
-    else:
-        rewritten = (raw or "").strip()
 
+    rewritten = _extract_text(llm.invoke(prompt).content)
     return rewritten if rewritten else question
 
 
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Pipeline — built once at startup via build_rag_chain(), reused every request
 # ---------------------------------------------------------------------------
 
 def build_rag_chain():
-    llm = get_llm()
+    llm = get_cached_llm()
 
     def full_pipeline(question: str, history: list[dict]):
         history_str = _format_history(history)
 
-        # ------------------------------------------------------------------
-        # 1. Contextualize the query using recent session history
-        # ------------------------------------------------------------------
+        # 1. Contextualize the query
         standalone_query = contextualize_query(question, history, llm)
 
         print(f"\n[DEBUG] Question  : {question}")
         if standalone_query != question:
             print(f"[DEBUG] Rewritten : {standalone_query}")
 
-        # ------------------------------------------------------------------
-        # 2. Vector retrieval (k=20) using the standalone query
-        # ------------------------------------------------------------------
+        # 2. Vector retrieval
         vector_results = get_docs_by_distance(standalone_query)
         candidates = [doc for doc, _ in vector_results]
 
-        print(f"\nVECTOR SEARCH  ({len(candidates)} candidates, threshold applied)")
+        print(f"\nVECTOR SEARCH  ({len(candidates)} candidates)")
 
-        # ------------------------------------------------------------------
-        # 3. Rerank candidates using the standalone query; apply threshold
-        #    then keep only top RERANKER_TOP_N
-        # ------------------------------------------------------------------
+        # 3. Rerank
         scored = rerank(standalone_query, candidates)
 
-        # Apply threshold first, then cap at top-N
         above_threshold = [(score, doc) for score, doc in scored
                            if score >= RERANKER_THRESHOLD]
-        final_docs = [doc for _, doc in above_threshold[:RERANKER_TOP_N]]
+        top_docs = above_threshold[:RERANKER_TOP_N]
+        final_docs = [doc for _, doc in top_docs]
+
+        # Build a set of ids for fast membership check — fixes the float
+        # comparison bug in the old loop
+        top_ids = {id(doc) for _, doc in top_docs}
 
         print(f"\nRERANKER  (threshold={RERANKER_THRESHOLD}, top_n={RERANKER_TOP_N})")
         for i, (score, doc) in enumerate(scored, 1):
             if i > max(len(above_threshold), RERANKER_TOP_N) + 2:
-                break  # stop printing once clearly below relevance
-            selected = (score, doc) in above_threshold[:RERANKER_TOP_N]
-            label = "✅" if selected else "❌"
+                break
+            label = "✅" if id(doc) in top_ids else "❌"
             print(f"  {i}. score={score:.4f} {label} | {_preview(doc.page_content)}")
 
         print(f"\nSUMMARY")
@@ -159,25 +164,16 @@ def build_rag_chain():
         print(f"  Above threshold   : {len(above_threshold)}")
         print(f"  Sent to LLM       : {len(final_docs)}")
 
-        # ------------------------------------------------------------------
-        # 4. Answer generation using the ORIGINAL question + final context
-        # ------------------------------------------------------------------
+        # 4. Answer generation
         context = "\n\n---\n\n".join(doc.page_content for doc in final_docs) if final_docs else ""
 
         prompt = ANSWER_TEMPLATE.invoke({
-            "question": question,        # original — not the rewritten query
+            "question": question,
             "context": context,
-            "history": history_str,      # labelled as reference only
+            "history": history_str,
         })
 
-        raw = llm.invoke(prompt).content
-        if isinstance(raw, list):
-            answer = "".join(
-                item.get("text", str(item)) if isinstance(item, dict) else str(item)
-                for item in raw
-            )
-        else:
-            answer = raw or ""
+        answer = _extract_text(llm.invoke(prompt).content)
         print(f"\nANSWER\n  {answer}\n")
         return answer
 
