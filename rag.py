@@ -1,3 +1,4 @@
+import time
 from langchain_core.prompts import ChatPromptTemplate
 
 from llm import get_llm
@@ -6,7 +7,7 @@ from reranker import rerank
 from config import RERANKER_THRESHOLD, RERANKER_TOP_N
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Prompt: query contextualization
 # ---------------------------------------------------------------------------
 CONTEXTUALIZE_PROMPT = """You are a query rewriter for a retrieval system.
 
@@ -32,28 +33,38 @@ CONTEXTUALIZE_TEMPLATE = ChatPromptTemplate.from_messages([
     ("human", CONTEXTUALIZE_PROMPT),
 ])
 
+# ---------------------------------------------------------------------------
+# Prompt: answer generation
+# ---------------------------------------------------------------------------
 ANSWER_PROMPT = """You are a specialized assistant.
 
 Rules:
 - Answer ONLY using the Context from documents provided below.
-- If the context does not contain enough information to answer, reply EXACTLY
-  with: "That's not my specialization."
+- If the context does not contain enough information to answer the resolved question,
+  reply EXACTLY with: "That's not my specialization."
 - Do not use general knowledge.
-- Do not be influenced by the conversation history when deciding whether to
-  answer — use it only to understand what the user means.
+- Use the resolved question to understand exactly what the user is asking.
+- Use the original question and conversation history only to preserve conversational context.
+- Answer naturally and directly.
 
 Recent conversation (for reference only):
 {history}
 
+Original user question:
+{original_question}
+
+Resolved question:
+{resolved_question}
+
 Context from documents:
 {context}
-
-Now answer the following question:"""
+"""
 
 ANSWER_TEMPLATE = ChatPromptTemplate.from_messages([
     ("system", ANSWER_PROMPT),
-    ("human", "{question}"),
+    ("human", "Answer the user's question."),
 ])
+
 
 # ---------------------------------------------------------------------------
 # LLM singleton
@@ -65,8 +76,9 @@ def get_cached_llm():
     global _llm
     if _llm is None:
         print("⏳ Loading LLM (once)...")
+        _t = time.perf_counter()
         _llm = get_llm()
-        print("✅ LLM ready.")
+        print(f"✅ LLM ready — {time.perf_counter() - _t:.2f}s")
     return _llm
 
 
@@ -89,74 +101,81 @@ def _preview(text: str, limit: int = 100) -> str:
             if len(text) > limit else text.replace("\n", " ").strip())
 
 
-def _extract_text(raw) -> str:
-    """Safely convert LLM .content (str or list) to a plain string."""
-    if isinstance(raw, list):
-        return "".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in raw
-        ).strip()
-    return (raw or "").strip()
-
-
 # ---------------------------------------------------------------------------
 # Query contextualization
 # ---------------------------------------------------------------------------
 
 def contextualize_query(question: str, history: list[dict], llm) -> str:
-    # Skip LLM call entirely when history is short — not worth the round-trip
-    if not history or len(history) < 4:
+    """
+    If there is no history, return the question unchanged immediately —
+    avoids an unnecessary LLM call for the common case.
+    """
+    if not history:
         return question
 
     prompt = CONTEXTUALIZE_TEMPLATE.invoke({
         "history": _format_history(history),
         "question": question,
     })
+    raw = llm.invoke(prompt).content
+    rewritten = "".join(
+        item.get("text", str(item)) if isinstance(item, dict) else str(item)
+        for item in raw
+    ).strip() if isinstance(raw, list) else (raw or "").strip()
 
-    rewritten = _extract_text(llm.invoke(prompt).content)
     return rewritten if rewritten else question
 
 
 # ---------------------------------------------------------------------------
-# Pipeline — built once at startup via build_rag_chain(), reused every request
+# Main pipeline
 # ---------------------------------------------------------------------------
 
 def build_rag_chain():
+    _t = time.perf_counter()
     llm = get_cached_llm()
+    print(f"✅ RAG pipeline initialised — {time.perf_counter() - _t:.2f}s")
 
     def full_pipeline(question: str, history: list[dict]):
+        t_total = time.perf_counter()
         history_str = _format_history(history)
 
-        # 1. Contextualize the query
+        # ------------------------------------------------------------------
+        # 1. Contextualize
+        # ------------------------------------------------------------------
+        t0 = time.perf_counter()
         standalone_query = contextualize_query(question, history, llm)
+        t_contextualize = time.perf_counter() - t0
 
         print(f"\n[DEBUG] Question  : {question}")
         if standalone_query != question:
             print(f"[DEBUG] Rewritten : {standalone_query}")
 
+        # ------------------------------------------------------------------
         # 2. Vector retrieval
+        # ------------------------------------------------------------------
+        t0 = time.perf_counter()
         vector_results = get_docs_by_distance(standalone_query)
         candidates = [doc for doc, _ in vector_results]
+        t_vector = time.perf_counter() - t0
 
-        print(f"\nVECTOR SEARCH  ({len(candidates)} candidates)")
+        print(f"\nVECTOR SEARCH  ({len(candidates)} candidates, threshold applied)")
 
+        # ------------------------------------------------------------------
         # 3. Rerank
+        # ------------------------------------------------------------------
+        t0 = time.perf_counter()
         scored = rerank(standalone_query, candidates)
-
         above_threshold = [(score, doc) for score, doc in scored
                            if score >= RERANKER_THRESHOLD]
-        top_docs = above_threshold[:RERANKER_TOP_N]
-        final_docs = [doc for _, doc in top_docs]
-
-        # Build a set of ids for fast membership check — fixes the float
-        # comparison bug in the old loop
-        top_ids = {id(doc) for _, doc in top_docs}
+        final_docs = [doc for _, doc in above_threshold[:RERANKER_TOP_N]]
+        t_rerank = time.perf_counter() - t0
 
         print(f"\nRERANKER  (threshold={RERANKER_THRESHOLD}, top_n={RERANKER_TOP_N})")
         for i, (score, doc) in enumerate(scored, 1):
             if i > max(len(above_threshold), RERANKER_TOP_N) + 2:
                 break
-            label = "✅" if id(doc) in top_ids else "❌"
+            selected = (score, doc) in above_threshold[:RERANKER_TOP_N]
+            label = "✅" if selected else "❌"
             print(f"  {i}. score={score:.4f} {label} | {_preview(doc.page_content)}")
 
         print(f"\nSUMMARY")
@@ -164,16 +183,43 @@ def build_rag_chain():
         print(f"  Above threshold   : {len(above_threshold)}")
         print(f"  Sent to LLM       : {len(final_docs)}")
 
-        # 4. Answer generation
+        # ------------------------------------------------------------------
+        # 4. Prompt building
+        # ------------------------------------------------------------------
+        t0 = time.perf_counter()
         context = "\n\n---\n\n".join(doc.page_content for doc in final_docs) if final_docs else ""
-
         prompt = ANSWER_TEMPLATE.invoke({
-            "question": question,
-            "context": context,
-            "history": history_str,
+        "original_question": question,
+        "resolved_question": standalone_query,
+        "context": context,
+        "history": history_str,
         })
+        t_prompt = time.perf_counter() - t0
 
-        answer = _extract_text(llm.invoke(prompt).content)
+        # ------------------------------------------------------------------
+        # 5. Final LLM generation
+        # ------------------------------------------------------------------
+        t0 = time.perf_counter()
+        answer = llm.invoke(prompt).content
+        t_llm = time.perf_counter() - t0
+
+        t_total = time.perf_counter() - t_total
+
+        # ------------------------------------------------------------------
+        # Performance summary
+        # ------------------------------------------------------------------
+        print("\n" + "─" * 40)
+        print("  PERFORMANCE SUMMARY")
+        print("─" * 40)
+        print(f"  Contextualization : {t_contextualize:.2f}s")
+        print(f"  Vector Search     : {t_vector:.2f}s")
+        print(f"  Reranking         : {t_rerank:.2f}s")
+        print(f"  Prompt Building   : {t_prompt:.2f}s")
+        print(f"  Final LLM         : {t_llm:.2f}s")
+        print("─" * 40)
+        print(f"  Total Pipeline    : {t_total:.2f}s")
+        print("─" * 40 + "\n")
+
         print(f"\nANSWER\n  {answer}\n")
         return answer
 

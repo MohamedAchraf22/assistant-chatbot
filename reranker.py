@@ -1,5 +1,6 @@
 from sentence_transformers import CrossEncoder
 from langchain_core.documents import Document
+import time
 from config import RERANKER_THRESHOLD
 
 RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
@@ -15,8 +16,9 @@ def get_reranker() -> CrossEncoder:
     global _reranker
     if _reranker is None:
         print(f"⏳ Loading reranker model '{RERANKER_MODEL}' (once)...")
+        _t = time.perf_counter()
         _reranker = CrossEncoder(RERANKER_MODEL)
-        print("✅ Reranker model ready.")
+        print(f"✅ Reranker model ready — {time.perf_counter() - _t:.2f}s")
     return _reranker
 
 

@@ -1,8 +1,10 @@
+# AFTER:
 import os
 import shutil
+import time                                           # ← add this
 from langchain_core.documents import Document
 from langchain_community.document_loaders import DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter , MarkdownHeaderTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER, RETRIEVAL_K
@@ -16,8 +18,9 @@ load_dotenv()
 # Singletons — loaded once at startup, reused on every request
 # ---------------------------------------------------------------------------
 print("⏳ Loading embedding model (once)...")
+_t = time.perf_counter()
 _embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-print("✅ Embedding model ready.")
+print(f"✅ Embedding model ready — {time.perf_counter() - _t:.2f}s")
 
 _vector_store: Chroma | None = None
 
