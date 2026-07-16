@@ -5,7 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from llm import get_llm
 from vector_store import get_docs_by_distance
 from reranker import rerank
-from config import RERANKER_THRESHOLD, RERANKER_TOP_N
+from config import RERANKER_THRESHOLD, RERANKER_TOP_N, RERANKER_ENABLED
 
 # ---------------------------------------------------------------------------
 # Prompt: combined router + query contextualization
@@ -244,24 +244,39 @@ def build_rag_chain():
 
         # Rerank
         t0 = time.perf_counter()
-        scored = rerank(standalone_query, candidates)
-        above_threshold = [(score, doc) for score, doc in scored
-                           if score >= RERANKER_THRESHOLD]
-        final_docs = [doc for _, doc in above_threshold[:RERANKER_TOP_N]]
-        t_rerank = time.perf_counter() - t0
+        if RERANKER_ENABLED:
+            scored = rerank(standalone_query, candidates)
+            above_threshold = [(score, doc) for score, doc in scored
+                               if score >= RERANKER_THRESHOLD]
+            final_docs = [doc for _, doc in above_threshold[:RERANKER_TOP_N]]
+            t_rerank = time.perf_counter() - t0
 
-        print(f"\nRERANKER  (threshold={RERANKER_THRESHOLD}, top_n={RERANKER_TOP_N})")
-        for i, (score, doc) in enumerate(scored, 1):
-            if i > max(len(above_threshold), RERANKER_TOP_N) + 2:
-                break
-            selected = (score, doc) in above_threshold[:RERANKER_TOP_N]
-            label = "✅" if selected else "❌"
-            print(f"  {i}. score={score:.4f} {label} | {_preview(doc.page_content)}")
+            print(f"\nRERANKER  (threshold={RERANKER_THRESHOLD}, top_n={RERANKER_TOP_N})")
+            for i, (score, doc) in enumerate(scored, 1):
+                if i > max(len(above_threshold), RERANKER_TOP_N) + 2:
+                    break
+                selected = (score, doc) in above_threshold[:RERANKER_TOP_N]
+                label = "✅" if selected else "❌"
+                print(f"  {i}. score={score:.4f} {label} | {_preview(doc.page_content)}")
 
-        print(f"\nSUMMARY")
-        print(f"  Vector candidates : {len(candidates)}")
-        print(f"  Above threshold   : {len(above_threshold)}")
-        print(f"  Sent to LLM       : {len(final_docs)}")
+            print(f"\nSUMMARY")
+            print(f"  Vector candidates : {len(candidates)}")
+            print(f"  Above threshold   : {len(above_threshold)}")
+            print(f"  Sent to LLM       : {len(final_docs)}")
+        else:
+            # Reranker disabled — send the top RERANKER_TOP_N vector-retrieved
+            # candidates straight to the LLM (rerank() above is left untouched
+            # so this can be flipped back on via RERANKER_ENABLED in config.py).
+            final_docs = candidates[:RERANKER_TOP_N]
+            t_rerank = time.perf_counter() - t0
+
+            print(f"\nRERANKER : DISABLED")
+            for i, doc in enumerate(final_docs, 1):
+                print(f"  {i}. | {_preview(doc.page_content)}")
+
+            print(f"\nSUMMARY")
+            print(f"  Vector candidates : {len(candidates)}")
+            print(f"  Documents sent to LLM: {len(final_docs)}")
 
         # Prompt building
         t0 = time.perf_counter()
