@@ -15,6 +15,9 @@ chainlit.md
 # Tests
 test*.py
 
+20_evaluation_questions_with_answers.xlsx
+results.csv
+
 # Environment variables
 .env
 

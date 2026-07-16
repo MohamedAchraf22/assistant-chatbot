@@ -30,6 +30,10 @@ REWRITING RULES:
 - Produce a single self-contained search query using context from history.
 - If the question is already self-contained, return it unchanged.
 - Resolve pronouns or references (e.g. "those teams", "he", "that policy").
+- Preserve the user's original intent exactly.
+- Do NOT introduce new entities, competitions, organizations, products, people, dates, or assumptions that are not explicitly mentioned in the user's question or conversation history.
+- Do NOT expand abbreviations or infer missing context unless it is explicitly available in the conversation history.
+- If multiple interpretations are possible, prefer the most literal interpretation instead of guessing.
 - For "social" messages, set standalone_query to the original message as-is.
 - Do NOT answer the question.
 
@@ -52,12 +56,15 @@ ANSWER_PROMPT = """You are a specialized assistant.
 
 Rules:
 - Answer ONLY using the Context from documents provided below.
-- If the context does not contain enough information to answer the resolved question,
-  reply EXACTLY with: "That's not my specialization."
-- Do not use general knowledge.
+- Never use external knowledge.
+- If the context contains relevant information, answer using ONLY that information, even if the answer is partial.
+- Do not refuse if the required information is explicitly present in the context.
+- Reply with "That's not my specialization." ONLY when the context contains no relevant information for answering the user's question.
 - Use the resolved question to understand exactly what the user is asking.
 - Use the original question and conversation history only to preserve conversational context.
 - Answer naturally and directly.
+- Ignore irrelevant or conflicting context that is unrelated to the user's question.
+- Prioritize the parts of the context that are most directly related to the resolved question.
 
 Recent conversation (for reference only):
 {history}
@@ -259,6 +266,18 @@ def build_rag_chain():
         # Prompt building
         t0 = time.perf_counter()
         context = "\n\n---\n\n".join(doc.page_content for doc in final_docs) if final_docs else ""
+        print("\n" + "=" * 100)
+        print("CONTEXT SENT TO LLM")
+        print("=" * 100)
+
+        for i, doc in enumerate(final_docs, 1):
+            print(f"\n---------- CHUNK {i} ----------")
+            print(doc.page_content)
+            print("\nMetadata:")
+            print(doc.metadata)
+
+        print("=" * 100 + "\n")
+
         prompt = ANSWER_TEMPLATE.invoke({
             "original_question": question,
             "resolved_question": standalone_query,
