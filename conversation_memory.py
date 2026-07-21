@@ -47,7 +47,11 @@ def save_conversation(user_message: str, bot_reply: str, session_id: str = None)
 def get_relevant_history(question: str, k: int = 6, threshold: float = 0.65):
     try:
         vectorstore = get_conversation_vectorstore()
-        docs_with_scores = vectorstore.similarity_search_with_score(question, k=k)
+        # BGE models need a query-side instruction prefix for retrieval; the
+        # conversation turns stored via save_conversation() are NOT prefixed,
+        # only the query at search time (mirrors vector_store.get_docs_by_distance).
+        bge_query = f"Represent this sentence for searching relevant passages: {question}"
+        docs_with_scores = vectorstore.similarity_search_with_score(bge_query, k=k)
     except Exception as e:
         print(f"  → Conversation store not ready yet: {e}")
         return "No previous conversations."

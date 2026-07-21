@@ -1,14 +1,20 @@
-from .state_manager import load_state, save_state
+import os
+
+from .state_manager import load_state, save_state, LOCK_FILE
 from .snapshot import generate_snapshot
 from .comparator import compare_states
 from vector_store import load_document_from_minio , add_documents,delete_documents_by_object_name
 
 
 def sync():
+    if os.path.exists(LOCK_FILE):
+        print("⏸️  Ingest lock present — a full rebuild is in progress, skipping this sync cycle.")
+        return
+
     print("=" * 50)
     print("  Ingestion Sync")
     print("=" * 50)
- 
+
     # 1. Load previous state
     old_state = load_state()
     print(f"\n📂 Loaded previous state ({len(old_state)} object(s)).")

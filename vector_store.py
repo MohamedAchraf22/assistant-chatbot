@@ -7,7 +7,7 @@ from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER, RETRIEVAL_K
+from config import DATA_PATH, CHROMA_PATH, RETRIEVAL_THRESHOLD, EMBEDDING_MODEL, STORAGE_PROVIDER, RETRIEVAL_K, SUPPORTED_EXTENSIONS
 from dotenv import load_dotenv
 from minio import Minio
 from storage.minio_client import get_minio_client
@@ -63,6 +63,11 @@ def load_documents_from_minio() -> list[Document]:
     objects = client.list_objects(bucket_name, recursive=True)
 
     for obj in objects:
+        _, ext = os.path.splitext(obj.object_name)
+        if ext.lower() not in SUPPORTED_EXTENSIONS:
+            print(f"Skipping unsupported file:\n{obj.object_name}")
+            continue
+
         response = client.get_object(bucket_name, obj.object_name)
         try:
             raw_bytes = response.read()
@@ -187,12 +192,28 @@ def split_text(documents):
         # Apply recursive splitting to each section; metadata is propagated
         # automatically by split_documents.
         chunks.extend(recursive_splitter.split_documents(sections))
-    for i, chunk in enumerate(chunks):
-        print("=" * 80)
-        print(f"Chunk {i}")
+
+    # --- TEMP DEBUG: dump only chunks belonging to data/assessments.md -----
+    assessments_chunks = [
+        (i, chunk) for i, chunk in enumerate(chunks)
+        if chunk.metadata.get("object_name") == "data/assessments.md"
+    ]
+    for i, chunk in assessments_chunks:
+        print("=" * 60)
+        print(f"Chunk #{i}")
+        print(f"Object: {chunk.metadata.get('object_name')}")
+        print("\nMetadata:")
         print(chunk.metadata)
+        print("\nLength:")
+        print(len(chunk.page_content))
+        print("\nContent:")
+        print("-" * 60)
         print(chunk.page_content)
- 
+        print("-" * 60)
+        print("=" * 60)
+    print(f"\nTotal chunks for data/assessments.md: {len(assessments_chunks)}")
+    # -------------------------------------------------------------------------
+
     print(f"Split {len(documents)} documents into {len(chunks)} chunks.")
     return chunks
 
@@ -256,5 +277,59 @@ def get_docs_by_distance(question: str, k: int = RETRIEVAL_K, threshold: float =
     if db._collection.count() == 0:
         return []
 
-    docs_with_scores = db.similarity_search_with_score(question, k=k)
+    # BGE models need a query-side instruction prefix for retrieval; the
+    # documents/passages stored at ingestion time are NOT prefixed (see
+    # save_to_chroma / add_documents), only the query at search time.
+    bge_query = f"Represent this sentence for searching relevant passages: {question}"
+    docs_with_scores = db.similarity_search_with_score(bge_query, k=k)
+
+    # --- TEMP DEBUG: compact retrieval report (pre-filter, pre-rerank) -----
+    target_keywords = [
+        "Backend",
+        "academies-assessments-slots",
+        "academies-booked-assessments",
+        "academies-assessments-cancellations",
+    ]
+    sep = "-" * 54
+    found_ranks = []
+
+    print("\n" + "=" * 54)
+    print("VECTOR SEARCH — COMPACT RETRIEVAL REPORT")
+    print("=" * 54)
+
+    for rank, (doc, score) in enumerate(docs_with_scores, 1):
+        meta = doc.metadata
+        section = "/".join(
+            part for part in (meta.get("h1"), meta.get("h2"), meta.get("h3")) if part
+        )
+        preview = doc.page_content[:80].replace("\n", " ")
+
+        print(f"Rank: {rank}")
+        print(f"Score: {score:.4f}")
+        print(f"Object: {meta.get('object_name')}")
+        print(f"Section: {section}")
+        print(f"StartIndex: {meta.get('start_index')}")
+        print(f"Preview: {preview}")
+        print(sep)
+
+        if any(kw in doc.page_content for kw in target_keywords):
+            found_ranks.append(rank)
+            print("FOUND TARGET CHUNK")
+            print(f"Rank: {rank}")
+            print(f"Object: {meta.get('object_name')}")
+            print(f"Section: {section}")
+            print(f"Score: {score:.4f}")
+            print(f"Preview: {preview}")
+            print(sep)
+
+    if not found_ranks:
+        print("TARGET NOT FOUND IN TOP 100")
+        print(sep)
+
+    print(f"\nVector candidates: {len(docs_with_scores)}")
+    print(f"\nTarget found: {'YES' if found_ranks else 'NO'}")
+    print(f"\nTarget rank(s): {found_ranks if found_ranks else 'None'}")
+    print(sep)
+    # -------------------------------------------------------------------------
+
     return [(doc, distance) for doc, distance in docs_with_scores if distance <= threshold]

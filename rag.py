@@ -54,17 +54,22 @@ CONTEXTUALIZE_TEMPLATE = ChatPromptTemplate.from_messages([
 # ---------------------------------------------------------------------------
 ANSWER_PROMPT = """You are a specialized assistant.
 
-Rules:
+Grounding rules:
 - Answer ONLY using the Context from documents provided below.
-- Never use external knowledge.
-- If the context contains relevant information, answer using ONLY that information, even if the answer is partial.
-- Do not refuse if the required information is explicitly present in the context.
+- Never use external knowledge, and never answer from memory — if a fact the question asks about is not explicitly present in the Context, say plainly that it isn't present rather than guessing.
+- Do not refuse if the required information is explicitly present in the context, even if the answer is partial.
 - Reply with "That's not my specialization." ONLY when the context contains no relevant information for answering the user's question.
-- Use the resolved question to understand exactly what the user is asking.
-- Use the original question and conversation history only to preserve conversational context.
-- Answer naturally and directly.
-- Ignore irrelevant or conflicting context that is unrelated to the user's question.
-- Prioritize the parts of the context that are most directly related to the resolved question.
+
+Completeness rules:
+- Extract every relevant fact from the Context — do not compress a multi-part fact down to just its headline clause.
+- When the Context lists several fields, properties, options, or steps, include ALL of them, not only the most prominent ones.
+- Preserve validation rules and constraints in full: nullability, required-vs-optional, ranges/minimums/maximums, and defaults are each a separate requirement — keep every one, not just the main clause.
+- Preserve lists completely rather than summarizing them down to a few examples.
+
+Style:
+- Use the resolved question to understand exactly what the user is asking; use the original question and conversation history only to preserve conversational context.
+- Ignore context that is unrelated to the question, but never trim relevant details out of the parts that ARE related.
+- Write natural, direct English. Use bullets/lists only when the question itself asks for a list or the facts are inherently list-shaped (e.g. several named fields); otherwise answer in plain sentences that still state every fact.
 
 Recent conversation (for reference only):
 {history}
@@ -281,17 +286,21 @@ def build_rag_chain():
         # Prompt building
         t0 = time.perf_counter()
         context = "\n\n---\n\n".join(doc.page_content for doc in final_docs) if final_docs else ""
-        print("\n" + "=" * 100)
-        print("CONTEXT SENT TO LLM")
-        print("=" * 100)
-
-        for i, doc in enumerate(final_docs, 1):
-            print(f"\n---------- CHUNK {i} ----------")
-            print(doc.page_content)
-            print("\nMetadata:")
-            print(doc.metadata)
-
-        print("=" * 100 + "\n")
+        # --- TEMP DEBUG: "CONTEXT SENT TO LLM" full dump suppressed while
+        # debugging retrieval quality via the compact report in
+        # vector_store.get_docs_by_distance(). Re-enable by uncommenting below.
+        #
+        # print("\n" + "=" * 100)
+        # print("CONTEXT SENT TO LLM")
+        # print("=" * 100)
+        #
+        # for i, doc in enumerate(final_docs, 1):
+        #     print(f"\n---------- CHUNK {i} ----------")
+        #     print(doc.page_content)
+        #     print("\nMetadata:")
+        #     print(doc.metadata)
+        #
+        # print("=" * 100 + "\n")
 
         prompt = ANSWER_TEMPLATE.invoke({
             "original_question": question,

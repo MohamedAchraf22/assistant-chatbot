@@ -26,3 +26,8 @@ chroma/
 
 # Local data
 data/
+
+
+evaluation_debug/
+
+question_expected_answer.csv

@@ -2,6 +2,7 @@ import json
 import os
 
 STATE_FILE = "ingestion_state.json"
+LOCK_FILE = ".ingest.lock"
 
 
 def load_state() -> dict:
